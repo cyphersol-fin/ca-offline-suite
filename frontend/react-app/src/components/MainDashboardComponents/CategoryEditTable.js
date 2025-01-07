@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Search, Loader2 } from "lucide-react";
+import { Search, Loader2, Save } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -14,14 +14,12 @@ import {
   TableHead,
   TableBody,
   TableCell,
-  TableFooter,
 } from "../ui/table";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import { Badge } from "../ui/badge";
 import { cn } from "../../lib/utils";
 import { Checkbox } from "../ui/checkbox";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "../ui/dialog";
 import {
   Pagination,
   PaginationContent,
@@ -32,9 +30,18 @@ import {
   PaginationPrevious,
 } from "../ui/pagination";
 import { Label } from "../ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select";
+import { useToast } from "../../hooks/use-toast";
 
-const DataTable = ({ data = [] }) => {
+const CategoryEditTable = ({ data = [], categoryOptions }) => {
   const [currentPage, setCurrentPage] = useState(1);
+  const [transactions, setTransactions] = useState([]);
   const [filteredData, setFilteredData] = useState(data);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterModalOpen, setFilterModalOpen] = useState(false);
@@ -47,9 +54,32 @@ const DataTable = ({ data = [] }) => {
   const [categorySearchTerm, setCategorySearchTerm] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const rowsPerPage = 10;
+  const { toast } = useToast();
+  const [pendingChanges, setPendingChanges] = useState({});
+  const [isSaving, setIsSaving] = useState(false);
+  const [hasChanges, setHasChanges] = useState(false);
+  const [currentData, setCurrentdata] = useState([]);
+  const [modifiedData, setModifiedData] = useState([]);
+  const [totalPages, setTotalPages] = useState(0);
+  const [startIndex, setStartIndex] = useState(0);
+  const [endIndex, setEndIndex] = useState(0);
+  const [columnsToIgnore, setColumnsToIgnore] = useState(["id"]);
+  
+  // New states for multiple selection
+  const [selectedRows, setSelectedRows] = useState([]);
+  const [bulkCategoryModalOpen, setBulkCategoryModalOpen] = useState(false);
+  const [selectedBulkCategory, setSelectedBulkCategory] = useState("");
+  const [confirmationModalOpen, setConfirmationModalOpen] = useState(false);
+  const [globalSelectedRows, setGlobalSelectedRows] = useState(new Set());
+
+  useEffect(() => {
+    setTransactions(data);
+    setFilteredData(data);
+  }, [data]);
 
   // Get dynamic columns from first data item
-  const columns = data.length > 0 ? Object.keys(data[0]) : [];
+  let columns = data.length > 0 ? Object.keys(data[0]) : [];
+  columns = columns.filter((column) => !columnsToIgnore.includes(column));
 
   // Determine which columns are numeric
   const numericColumns = columns.filter((column) =>
@@ -59,32 +89,13 @@ const DataTable = ({ data = [] }) => {
     })
   );
 
-  useEffect(() => {
-    setFilteredData(data);
-  }, [data]);
-
   const handleSearch = (searchValue) => {
     setSearchTerm(searchValue);
     if (searchValue === "") {
-      setFilteredData(data);
+      setFilteredData(transactions);
       setCurrentPage(1);
       return;
     }
-
-    // Calculate totals for numeric columns
-    const totals = numericColumns.reduce((acc, column) => {
-      const total = filteredData.reduce((sum, row) => {
-        const value = parseFloat(String(row[column]).replace(/,/g, ""));
-        return !isNaN(value) ? sum + value : sum;
-      }, 0);
-      return {
-        ...acc,
-        [column]: total.toLocaleString(undefined, {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-        }),
-      };
-    }, {});
 
     const columnsToReplace = ["amount", "balance", "debit", "credit"];
     const filtered = filteredData.filter((row) =>
@@ -101,6 +112,92 @@ const DataTable = ({ data = [] }) => {
 
     setFilteredData(filtered);
     setCurrentPage(1);
+  };
+
+  const handleCategoryChange = (rowIndex, newCategory) => {
+    const dataOnUi = [...currentData];
+    const oldCategory = dataOnUi[rowIndex].category;
+    dataOnUi[rowIndex].category = newCategory;
+    setCurrentdata(dataOnUi);
+
+    const modifiedObject = { ...dataOnUi[rowIndex], oldCategory: oldCategory };
+    setModifiedData([...modifiedData, modifiedObject]);
+    setHasChanges(true);
+  };
+
+  // New function to handle bulk category change
+  // Modify bulk category update to work with global selection
+  const handleBulkCategoryChange = () => {
+    setFilteredData(prevData => {
+      const updatedData = [...prevData];
+      const newModifiedData = [...modifiedData];
+      
+      globalSelectedRows.forEach(globalIndex => {
+        const oldCategory = updatedData[globalIndex].category;
+        updatedData[globalIndex] = {
+          ...updatedData[globalIndex],
+          category: selectedBulkCategory
+        };
+
+        const modifiedObject = {
+          ...updatedData[globalIndex],
+          oldCategory: oldCategory
+        };
+
+        newModifiedData.push(modifiedObject);
+      });
+
+      // Update modified data in a separate state update
+      setModifiedData(newModifiedData);
+      setHasChanges(true);
+      setGlobalSelectedRows(new Set());
+      setBulkCategoryModalOpen(false);
+      setConfirmationModalOpen(false);
+      setSelectedBulkCategory("");
+
+      toast({
+        title: "Categories updated",
+        description: `Updated ${globalSelectedRows.size} transactions`,
+      });
+
+      return updatedData;
+    });
+  };
+
+  // Function to handle row selection
+  const toggleRowSelection = (index) => {
+    const globalIndex = startIndex + index;
+    setGlobalSelectedRows(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(globalIndex)) {
+        newSet.delete(globalIndex);
+      } else {
+        newSet.add(globalIndex);
+      }
+      return newSet;
+    });
+  };
+
+   // Modify toggleSelectAll for current page
+   const toggleSelectAll = () => {
+    const newGlobalSelected = new Set(globalSelectedRows);
+    const allCurrentPageSelected = filteredData.every((_, index) => 
+      newGlobalSelected.has(startIndex + index)
+    );
+
+    if (allCurrentPageSelected) {
+      // Unselect all items on current page
+      filteredData.forEach((_, index) => {
+        newGlobalSelected.delete(startIndex + index);
+      });
+    } else {
+      // Select all items on current page
+      filteredData.forEach((_, index) => {
+        newGlobalSelected.add(startIndex + index);
+      });
+    }
+    
+    setGlobalSelectedRows(newGlobalSelected);
   };
 
   const handleCategorySelect = (category) => {
@@ -121,7 +218,7 @@ const DataTable = ({ data = [] }) => {
 
   const handleColumnFilter = () => {
     if (selectedCategories.length === 0) {
-      setFilteredData(data);
+      setFilteredData(transactions);
     } else {
       const filtered = data.filter((row) =>
         selectedCategories.includes(String(row[currentFilterColumn]))
@@ -146,12 +243,13 @@ const DataTable = ({ data = [] }) => {
 
   const clearFilters = () => {
     setSearchTerm("");
-    setFilteredData(data);
+    setFilteredData(transactions);
     setCurrentPage(1);
     setMinValue("");
     setMaxValue("");
     setSelectedCategories([]);
     setCategorySearchTerm("");
+    setSelectedRows([]);
   };
 
   const getUniqueValues = (columnName) => {
@@ -166,13 +264,16 @@ const DataTable = ({ data = [] }) => {
     );
   };
 
-  // Pagination calculations
-  const totalPages = Math.ceil(filteredData.length / rowsPerPage);
-  const startIndex = (currentPage - 1) * rowsPerPage;
-  const endIndex = startIndex + rowsPerPage;
-  const currentData = filteredData.slice(startIndex, endIndex);
+  useEffect(() => {
+    const totalPagesTemp = Math.ceil(filteredData.length / rowsPerPage);
+    setTotalPages(totalPagesTemp);
+    const startIndexTemp = (currentPage - 1) * rowsPerPage;
+    setStartIndex(startIndexTemp);
+    const endIndexTemp = startIndexTemp + rowsPerPage;
+    setEndIndex(endIndexTemp);
+    setCurrentdata(filteredData.slice(startIndexTemp, endIndexTemp));
+  }, [filteredData, currentPage]);
 
-  // Generate page numbers for pagination
   const getPageNumbers = () => {
     const pageNumbers = [];
     const maxVisiblePages = 5;
@@ -197,22 +298,50 @@ const DataTable = ({ data = [] }) => {
     return pageNumbers;
   };
 
-  // Calculate totals for numeric columns
-  const totals = numericColumns.reduce((acc, column) => {
-    const total = filteredData.reduce((sum, row) => {
-      const value = parseFloat(row[column]);
-      return !isNaN(value) ? sum + value : sum;
-    }, 0);
-    return { ...acc, [column]: total.toFixed(2) };
-  }, {});
+  const handleSaveChanges = async () => {
+    try {
+      setIsLoading(true);
+
+      console.log({"Form Submitted":modifiedData});
+      
+      // const response = await fetch('/api/update-categories', {
+      //   method: 'POST',
+      //   headers: {
+      //     'Content-Type': 'application/json',
+      //   },
+      //   body: JSON.stringify({ data: "test" }),
+      // });
+
+      // if (!response.ok) {
+      //   throw new Error('Failed to save changes');
+      // }
+
+      setHasChanges(false);
+      toast({
+        title: "Changes saved successfully",
+        description: "All category updates have been saved",
+      });
+
+    } catch (error) {
+      toast({
+        title: "Error saving changes",
+        description: error.message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   return (
-    <Card>
+    <div className="relative min-h-screen flex flex-col">
+
+    <Card className="flex-1">
       <CardHeader>
         <div className="flex justify-between items-center">
           <div className="space-y-2">
-            <CardTitle className="dark:text-slate-300">Data Table</CardTitle>
-            <CardDescription>View and manage your data</CardDescription>
+            <CardTitle>Edit Categories</CardTitle>
+            <CardDescription>View and manage your categories</CardDescription>
           </div>
           <div className="relative flex items-center gap-2">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -233,6 +362,17 @@ const DataTable = ({ data = [] }) => {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead>
+                <Checkbox
+                    checked={
+                      currentData.length > 0 &&
+                      currentData.every((_, index) => 
+                        globalSelectedRows.has(startIndex + index)
+                      )
+                    }
+                    onCheckedChange={toggleSelectAll}
+                  />
+                </TableHead>
                 {columns.map((column) => (
                   <TableHead key={column}>
                     <div className="flex items-center gap-2">
@@ -266,20 +406,45 @@ const DataTable = ({ data = [] }) => {
             <TableBody>
               {currentData.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={columns.length} className="text-center">
+                  <TableCell colSpan={columns.length + 1} className="text-center">
                     No matching results found
                   </TableCell>
                 </TableRow>
               ) : (
                 currentData.map((row, index) => (
-                  <TableRow key={index}>
+                  <TableRow key={index} className={cn(selectedRows.includes(index) && "bg-muted/50")}>
+                    <TableCell>
+                    <Checkbox
+                      checked={globalSelectedRows.has(startIndex + index)}
+                      onCheckedChange={() => toggleRowSelection(index)}
+                    />
+                    </TableCell>
                     {columns.map((column) => (
                       <TableCell
                         key={column}
                         className="max-w-[200px] group relative"
                       >
-                        <div className="truncate">{row[column]}</div>
-                        {/* Tooltip */}
+                        {column.toLowerCase() === "category" ? (
+                          <Select
+                            value={row[column]}
+                            onValueChange={(value) => handleCategoryChange(index, value)}
+                            className="w-full"
+                            disabled={globalSelectedRows.has(startIndex + index)}
+                          >
+                            <SelectTrigger className="w-full">
+                              <SelectValue>{row[column]}</SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                              {categoryOptions.map((category) => (
+                                <SelectItem key={category} value={category}>
+                                  {category}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <div className="truncate">{row[column]}</div>
+                        )}
                         {column.toLowerCase() === "description" && (
                           <div className="absolute left-0 top-10 hidden group-hover:block bg-black text-white text-sm rounded p-2 z-50 whitespace-normal min-w-[200px] max-w-[400px]">
                             {row[column]}
@@ -291,19 +456,10 @@ const DataTable = ({ data = [] }) => {
                 ))
               )}
             </TableBody>
-            <TableFooter>
-              <TableRow>
-                <TableCell>Total</TableCell>
-                {columns.slice(1).map((column) => (
-                  <TableCell key={column}>
-                    {numericColumns.includes(column) ? totals[column] : ""}
-                  </TableCell>
-                ))}
-              </TableRow>
-            </TableFooter>
           </Table>
         </div>
 
+     
         {/* Pagination */}
         {totalPages > 1 && (
           <div className="mt-6">
@@ -353,14 +509,13 @@ const DataTable = ({ data = [] }) => {
         )}
       </CardContent>
 
-      {/* Category Filter Modal - Apple Style */}
+
+      {/* Category Filter Modal */}
       {filterModalOpen && (
         <Dialog open={filterModalOpen} onOpenChange={setFilterModalOpen}>
           <DialogContent className="sm:max-w-[400px]">
             <DialogHeader>
-              <DialogTitle className="dark:text-slate-300">
-                Filter {currentFilterColumn}
-              </DialogTitle>
+              <DialogTitle>Filter {currentFilterColumn}</DialogTitle>
               <p className="text-sm text-gray-600">
                 Make changes to your filter here. Click save when you're done.
               </p>
@@ -376,13 +531,13 @@ const DataTable = ({ data = [] }) => {
               {getFilteredUniqueValues(currentFilterColumn).map((value) => (
                 <label
                   key={value}
-                  className="flex items-center gap-1 p-2 hover:bg-gray-50 rounded-md cursor-pointer dark:hover:bg-gray-700"
+                  className="flex items-center gap-1 p-2 hover:bg-gray-50 rounded-md cursor-pointer"
                 >
                   <Checkbox
                     checked={selectedCategories.includes(value)}
                     onCheckedChange={() => handleCategorySelect(value)}
                   />
-                  <span className="text-gray-700 dark:text-white">{value}</span>
+                  <span className="text-gray-700">{value}</span>
                 </label>
               ))}
             </div>
@@ -392,7 +547,7 @@ const DataTable = ({ data = [] }) => {
               </Button>
               <Button
                 variant="default"
-                className="bg-black hover:bg-gray-800 dark:bg-white dark:text-black dark:hover:bg-gray-200"
+                className="bg-black hover:bg-gray-800"
                 onClick={handleColumnFilter}
               >
                 Save changes
@@ -402,6 +557,7 @@ const DataTable = ({ data = [] }) => {
         </Dialog>
       )}
 
+      {/* Numeric Filter Modal */}
       {numericFilterModalOpen && (
         <Dialog
           open={numericFilterModalOpen}
@@ -441,7 +597,7 @@ const DataTable = ({ data = [] }) => {
               </Button>
               <Button
                 variant="default"
-                className="bg-black hover:bg-gray-800 dark:bg-white dark:text-black dark:hover:bg-gray-200"
+                className="bg-black hover:bg-gray-800"
                 onClick={() => {
                   handleNumericFilter(currentNumericColumn, minValue, maxValue);
                   setNumericFilterModalOpen(false);
@@ -453,6 +609,78 @@ const DataTable = ({ data = [] }) => {
           </DialogContent>
         </Dialog>
       )}
+
+      {/* Bulk Category Update Modal */}
+      <Dialog open={bulkCategoryModalOpen} onOpenChange={setBulkCategoryModalOpen}>
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle>Update Multiple Categories</DialogTitle>
+            <DialogDescription>
+              Select a new category for the {selectedRows.length} selected transactions
+            </DialogDescription>
+          </DialogHeader>
+          <Select
+            value={selectedBulkCategory}
+            onValueChange={setSelectedBulkCategory}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Select new category" />
+            </SelectTrigger>
+            <SelectContent>
+              {categoryOptions.map((category) => (
+                <SelectItem key={category} value={category}>
+                  {category}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => setBulkCategoryModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="default"
+              onClick={() => {
+                setBulkCategoryModalOpen(false);
+                setConfirmationModalOpen(true);
+              }}
+              disabled={!selectedBulkCategory}
+            >
+              Update Categories
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirmation Modal */}
+      <Dialog open={confirmationModalOpen} onOpenChange={setConfirmationModalOpen}>
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle>Confirm Category Update</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to update the category to "{selectedBulkCategory}" for {selectedRows.length} transactions?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => setConfirmationModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="default"
+              onClick={handleBulkCategoryChange}
+            >
+              Confirm Update
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Loading Overlay */}
       {isLoading && (
         <div className="fixed inset-0 bg-white bg-opacity-80 backdrop-blur-sm flex items-center justify-center">
@@ -460,7 +688,36 @@ const DataTable = ({ data = [] }) => {
         </div>
       )}
     </Card>
+    
+        {/* Fixed bottom actions bar */}
+        {(hasChanges || globalSelectedRows.size > 0) && (
+        <div className="sticky bottom-0 left-0 right-0 bg-white border-t p-4 shadow-lg flex justify-end gap-2 z-50">
+            {globalSelectedRows.size > 0 && (
+              <Button
+                variant="secondary"
+                onClick={() => setBulkCategoryModalOpen(true)}
+              >
+                Update Selected ({globalSelectedRows.size})
+              </Button>
+            )}
+            {hasChanges && (
+              <Button
+                onClick={handleSaveChanges}
+                disabled={isLoading}
+                className="flex items-center gap-2"
+              >
+                {isLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
+                Save Changes
+              </Button>
+            )}
+          </div>
+        )}
+    </div>
   );
 };
 
-export default DataTable;
+export default CategoryEditTable;
